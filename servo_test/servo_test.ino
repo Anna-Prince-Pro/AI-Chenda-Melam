@@ -4,23 +4,27 @@ Servo chendaServo;
 
 const int SERVO_PIN = 9;
 
-void setup() {
-  Serial.begin(9600);
+const int REST_POSITION = 40;
+const int STRIKE_POSITION = 100;
 
+void setup() {
   chendaServo.attach(SERVO_PIN);
 
-  // Starting/rest position
-  chendaServo.write(90);
+  // Start at resting position
+  chendaServo.write(REST_POSITION);
 
-  Serial.println("Servo Test Ready");
+  delay(1000);
 }
 
 void loop() {
-  // Strike movement
-  chendaServo.write(40);
-  delay(500);
 
-  // Return to resting position
-  chendaServo.write(90);
-  delay(500);
+  // FAST DOWNWARD STRIKE
+  chendaServo.write(STRIKE_POSITION);
+
+  delay(80);
+
+  // FAST RETURN
+  chendaServo.write(REST_POSITION);
+
+  delay(250);
 }
