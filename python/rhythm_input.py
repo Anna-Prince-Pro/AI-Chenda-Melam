@@ -608,8 +608,9 @@ def main():
                             )
 
                             play_rhythm(
-                                ai_response
-                            )
+    ai_response,
+    analysis["intervals"]
+)
 
 
                     # =========================================
