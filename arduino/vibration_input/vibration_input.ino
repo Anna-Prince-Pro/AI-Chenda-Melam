@@ -3,7 +3,7 @@ const int vibrationPin = 2;
 int previousState = LOW;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   pinMode(vibrationPin, INPUT);
 
   Serial.println("AI Chenda Melam - Ready");

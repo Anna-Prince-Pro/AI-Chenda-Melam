@@ -1,6 +1,5 @@
 import serial
 import time
-import statistics
 import os
 
 from dotenv import load_dotenv
@@ -9,288 +8,443 @@ from google import genai
 from rhythm_player import play_rhythm
 
 
-# =================================
-# LOAD ENVIRONMENT VARIABLES
-# =================================
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
+PORT = "COM3"
+BAUD_RATE = 115200
+
+# Time to wait after the last tap before considering
+# the user's rhythm phrase complete
+PHRASE_TIMEOUT = 1.5
+
+# Minimum taps required to analyze a rhythm
+MIN_TAPS = 4
+
+
+# =========================================================
+# LOAD GEMINI API KEY
+# =========================================================
 
 BASE_DIR = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
 
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+env_path = os.path.join(
+    BASE_DIR,
+    ".env"
+)
+
+load_dotenv(env_path)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY not found in .env file!"
-    )
+    print("ERROR: GEMINI_API_KEY not found in .env")
+    raise SystemExit
 
 
-# =================================
-# GEMINI CLIENT
-# =================================
+# =========================================================
+# INITIALIZE GEMINI
+# =========================================================
 
-client = genai.Client(api_key=API_KEY)
-
-
-# =================================
-# ARDUINO SETTINGS
-# =================================
-
-PORT = "COM3"
-BAUD_RATE = 9600
+client = genai.Client(
+    api_key=API_KEY
+)
 
 
-# =================================
-# RHYTHM SETTINGS
-# =================================
+# =========================================================
+# RHYTHM ANALYSIS
+# =========================================================
 
-MIN_TAPS = 6
+def analyze_rhythm(taps):
 
-# Time without a tap before the
-# rhythm phrase is considered finished
-PAUSE_THRESHOLD = 1.5
-
-# Ignore duplicate/accidental sensor hits
-DEBOUNCE_TIME = 250
-
-
-# =================================
-# ANALYZE RHYTHM
-# =================================
-
-def analyze_rhythm(tap_times):
-
-    if len(tap_times) < MIN_TAPS:
-        print("\nNot enough taps for analysis.")
+    if len(taps) < MIN_TAPS:
         return None
+
+    # -----------------------------------------------------
+    # CALCULATE INTERVALS
+    # -----------------------------------------------------
 
     intervals = []
 
-    for i in range(1, len(tap_times)):
+    for i in range(1, len(taps)):
 
-        interval = tap_times[i] - tap_times[i - 1]
+        interval = taps[i] - taps[i - 1]
 
-        # Ignore abnormal pauses
-        if interval < 2000:
-            intervals.append(interval)
+        intervals.append(interval)
 
-    if len(intervals) < 3:
-        print("Not enough valid intervals.")
+
+    # Remove extremely long gaps
+    active_intervals = [
+        value
+        for value in intervals
+        if value < 1500
+    ]
+
+    if len(active_intervals) == 0:
         return None
 
 
-    # -----------------------------
+    # -----------------------------------------------------
+    # AVERAGE INTERVAL
+    # -----------------------------------------------------
+
+    average_interval = (
+        sum(active_intervals)
+        / len(active_intervals)
+    )
+
+
+    # -----------------------------------------------------
     # TEMPO
-    # -----------------------------
+    # -----------------------------------------------------
 
-    average_interval = statistics.mean(intervals)
+    tempo = (
+        60000
+        / average_interval
+    )
 
-    bpm = 60000 / average_interval
+    tempo = max(
+        60,
+        min(
+            round(tempo),
+            220
+        )
+    )
 
 
-    # -----------------------------
+    # -----------------------------------------------------
     # SPEED
-    # -----------------------------
+    # -----------------------------------------------------
 
-    if bpm < 80:
+    if tempo < 90:
         speed = "SLOW"
 
-    elif bpm < 120:
+    elif tempo < 135:
         speed = "MEDIUM"
 
     else:
         speed = "FAST"
 
 
-    # -----------------------------
+    # -----------------------------------------------------
     # RHYTHM TREND
-    # -----------------------------
+    # -----------------------------------------------------
 
-    midpoint = len(intervals) // 2
+    if len(active_intervals) >= 4:
 
-    first_half = intervals[:midpoint]
-    second_half = intervals[midpoint:]
+        middle = len(active_intervals) // 2
 
-    trend = "STABLE"
+        first_half = active_intervals[:middle]
+        second_half = active_intervals[middle:]
 
-    if first_half and second_half:
+        first_average = (
+            sum(first_half)
+            / len(first_half)
+        )
 
-        first_avg = statistics.mean(first_half)
-        second_avg = statistics.mean(second_half)
+        second_average = (
+            sum(second_half)
+            / len(second_half)
+        )
 
-        if second_avg < first_avg * 0.85:
+        difference = (
+            second_average
+            - first_average
+        )
+
+        if difference < -60:
             trend = "ACCELERATING"
 
-        elif second_avg > first_avg * 1.15:
+        elif difference > 60:
             trend = "SLOWING_DOWN"
 
-
-    # -----------------------------
-    # RHYTHM STRUCTURE
-    # -----------------------------
-
-    structure = []
-
-    for interval in intervals:
-
-        ratio = interval / average_interval
-
-        if ratio < 0.75:
-            structure.append("SHORT")
-
-        elif ratio > 1.35:
-            structure.append("LONG")
-
         else:
-            structure.append("NORMAL")
-
-
-    # -----------------------------
-    # RHYTHM CONSISTENCY
-    # -----------------------------
-
-    if len(intervals) > 1:
-
-        variation = statistics.stdev(intervals)
-        variation_ratio = variation / average_interval
+            trend = "STABLE"
 
     else:
-        variation_ratio = 0
+        trend = "STABLE"
 
 
-    # -----------------------------
+    # -----------------------------------------------------
+    # CONSISTENCY
+    # -----------------------------------------------------
+
+    deviations = []
+
+    for interval in active_intervals:
+
+        deviation = abs(
+            interval
+            - average_interval
+        )
+
+        deviations.append(deviation)
+
+    average_deviation = (
+        sum(deviations)
+        / len(deviations)
+    )
+
+    consistency_variation = (
+        average_deviation
+        / average_interval
+    )
+
+
+    # -----------------------------------------------------
     # INTENSITY
-    # -----------------------------
+    # -----------------------------------------------------
 
-    if bpm >= 150:
+    if tempo >= 150:
         intensity = "HIGH"
 
-    elif bpm >= 100:
+    elif tempo >= 100:
         intensity = "MEDIUM"
 
     else:
         intensity = "LOW"
 
 
-    # -----------------------------
-    # DISPLAY RESULTS
-    # -----------------------------
+    # -----------------------------------------------------
+    # RHYTHM STRUCTURE
+    # -----------------------------------------------------
 
-    print("\n" + "=" * 45)
-    print("         RHYTHM ANALYSIS")
-    print("=" * 45)
+    structure = []
 
-    print(f"Tap count: {len(tap_times)}")
-    print(f"Average interval: {average_interval:.2f} ms")
-    print(f"Tempo: {bpm:.2f} BPM")
-    print(f"Speed: {speed}")
-    print(f"Trend: {trend}")
-    print(f"Intensity: {intensity}")
-    print(f"Consistency variation: {variation_ratio:.2f}")
+    for interval in active_intervals:
 
-    print("\nIntervals:")
-    print(intervals)
+        ratio = (
+            interval
+            / average_interval
+        )
 
-    print("\nRhythm structure:")
-    print(" ".join(structure))
+        if ratio < 0.75:
 
-    print("=" * 45)
+            structure.append(
+                "SHORT"
+            )
+
+        elif ratio > 1.30:
+
+            structure.append(
+                "LONG"
+            )
+
+        else:
+
+            structure.append(
+                "NORMAL"
+            )
 
 
-    return {
-        "tap_count": len(tap_times),
-        "intervals": intervals,
-        "average_interval": average_interval,
-        "bpm": bpm,
+    # -----------------------------------------------------
+    # CREATE RESULT
+    # -----------------------------------------------------
+
+    result = {
+
+        "tap_count": len(taps),
+
+        "intervals": active_intervals,
+
+        "average_interval": round(
+            average_interval,
+            2
+        ),
+
+        "tempo": tempo,
+
         "speed": speed,
+
         "trend": trend,
+
         "intensity": intensity,
-        "structure": structure,
-        "variation_ratio": variation_ratio
+
+        "consistency": round(
+            consistency_variation,
+            2
+        ),
+
+        "structure": structure
     }
 
+    return result
 
-# =================================
+
+# =========================================================
+# PRINT RHYTHM ANALYSIS
+# =========================================================
+
+def print_analysis(analysis):
+
+    print("\n=============================================")
+    print("         RHYTHM ANALYSIS")
+    print("=============================================")
+
+    print(
+        "Tap count:",
+        analysis["tap_count"]
+    )
+
+    print(
+        "Average interval:",
+        analysis["average_interval"],
+        "ms"
+    )
+
+    print(
+        "Tempo:",
+        analysis["tempo"],
+        "BPM"
+    )
+
+    print(
+        "Speed:",
+        analysis["speed"]
+    )
+
+    print(
+        "Trend:",
+        analysis["trend"]
+    )
+
+    print(
+        "Intensity:",
+        analysis["intensity"]
+    )
+
+    print(
+        "Consistency variation:",
+        analysis["consistency"]
+    )
+
+    print("\nIntervals:")
+
+    print(
+        analysis["intervals"]
+    )
+
+    print("\nRhythm structure:")
+
+    print(
+        " ".join(
+            analysis["structure"]
+        )
+    )
+
+    print("=============================================\n")
+
+
+# =========================================================
 # GENERATE AI RHYTHM
-# =================================
+# =========================================================
 
 def generate_ai_rhythm(analysis):
-
-    print("\nSending rhythm to Gemini...")
-
-    intervals_text = ", ".join(
-        str(interval)
-        for interval in analysis["intervals"]
-    )
 
     structure_text = " ".join(
         analysis["structure"]
     )
 
-
     prompt = f"""
-You are the rhythm intelligence module of an interactive
-AI Chenda Melam system.
+You are the musical intelligence of an interactive AI Chenda Melam system.
 
-A human performer has tapped a physical rhythm.
+A human has performed a rhythm on a drum sensor.
 
-Generate a creative CALL-AND-RESPONSE Chenda-style rhythm
-based specifically on the input characteristics.
+Your task is to analyze the rhythm characteristics and compose a SHORT,
+energetic, Chenda-inspired rhythmic RESPONSE.
 
-INPUT:
+INPUT RHYTHM ANALYSIS:
 
-Tempo: {analysis["bpm"]:.0f} BPM
+Tempo: {analysis["tempo"]} BPM
 Speed: {analysis["speed"]}
 Trend: {analysis["trend"]}
 Intensity: {analysis["intensity"]}
-
-Tap intervals in milliseconds:
-{intervals_text}
+Tap count: {analysis["tap_count"]}
+Consistency variation: {analysis["consistency"]}
 
 Rhythm structure:
 {structure_text}
 
-INSTRUCTIONS:
+COMPOSITION RULES:
 
-- Do NOT return a generic repeating pattern.
-- Create a variation inspired by the input rhythm.
-- Preserve approximately the same tempo.
-- Keep the response energetic if the input is FAST.
-- Use DHUM for strong accents and longer beats.
-- Use TA for faster subdivisions.
-- Make the rhythm sound like a response to the performer.
-- Use between 8 and 20 beats.
-- Use ONLY the tokens DHUM and TA.
+1. Respond to the CHARACTER of the human rhythm.
 
-Return ONLY this exact format:
+2. If the rhythm is FAST or ACCELERATING:
+   gradually build energy and use denser TA patterns.
 
-PATTERN: DHUM TA TA DHUM TA DHUM TA TA
-TEMPO: 169
-INTENSITY: HIGH
+3. If the rhythm is SLOW:
+   use stronger DHUM strokes and more space.
+
+4. If the rhythm is SLOWING_DOWN:
+   create a controlled response and finish strongly.
+
+5. Use BOTH DHUM and TA.
+
+6. Divide the composition into 3 to 5 MUSICAL PHRASES using |.
+
+7. Create musical development:
+   - Phrase 1 responds to the input
+   - Middle phrases develop or intensify
+   - Final phrase creates a climax or resolution
+
+8. Avoid repeating exactly the same phrase.
+
+9. Keep the response between 12 and 24 total strokes.
+
+10. Use only these rhythm tokens:
+    DHUM
+    TA
+    |
+
+11. Do not write explanations.
+
+Return EXACTLY in this format:
+
+PATTERN: DHUM TA TA | DHUM TA DHUM TA | DHUM DHUM TA TA | DHUM TA DHUM
+TEMPO: number
+INTENSITY: LOW or MEDIUM or HIGH
+
+The output tempo should remain close to the human tempo,
+within approximately plus or minus 15 BPM.
 """
+
+    print(
+        "Sending musical analysis to Gemini..."
+    )
 
     try:
 
         response = client.models.generate_content(
+
             model="gemini-3.6-flash",
+
             contents=prompt
         )
 
-        return response.text.strip()
+        ai_response = (
+            response.text.strip()
+        )
 
-    except Exception as e:
+        print("\n--- AI COMPOSITION ---")
+        print(ai_response)
+
+        return ai_response
+
+
+    except Exception as error:
 
         print("\nGemini Error:")
-        print(e)
+        print(error)
 
         return None
 
 
-# =================================
+# =========================================================
 # MAIN PROGRAM
-# =================================
+# =========================================================
 
 def main():
 
@@ -304,31 +458,31 @@ def main():
             timeout=0.1
         )
 
-    except serial.SerialException as e:
+        # Arduino may reset when serial connection opens
+        time.sleep(2)
 
-        print("\nCould not connect to Arduino!")
-        print(e)
+        # Remove old startup data from the serial buffer
+        ser.reset_input_buffer()
+
+        print("Connected!")
+
+    except Exception as error:
+
+        print("\nCould not connect to Arduino.")
+        print(error)
 
         return
 
 
-    time.sleep(2)
-
-    # Clear old data from Arduino
-    ser.reset_input_buffer()
-
-
-    print("Connected!")
-
     print("\nTap a rhythm on the drum.")
     print(
-        f"Stop tapping for {PAUSE_THRESHOLD} seconds "
-        "and the AI will respond automatically."
+        "Stop tapping for 1.5 seconds and "
+        "the AI will respond automatically."
     )
     print("Press Ctrl + C to stop.\n")
 
 
-    tap_times = []
+    taps = []
     last_tap_time = None
 
 
@@ -336,87 +490,108 @@ def main():
 
         while True:
 
-            # =========================
-            # CHECK FOR SERIAL DATA
-            # =========================
+            # =================================================
+            # READ ALL AVAILABLE ARDUINO DATA
+            # =================================================
 
-            if ser.in_waiting > 0:
+            while ser.in_waiting:
 
-                line = (
-                    ser.readline()
-                    .decode(
-                        "utf-8",
-                        errors="ignore"
+                raw_line = ser.readline()
+
+                if not raw_line:
+                    break
+
+                line = raw_line.decode(
+                    "utf-8",
+                    errors="ignore"
+                ).strip()
+
+                # DEBUG:
+                # Shows exactly what Python receives
+                if line:
+                    print(
+                        f"SERIAL RECEIVED: [{line}]"
                     )
-                    .strip()
-                )
 
 
-                # =====================
-                # RECEIVE TAP
-                # =====================
+                # =============================================
+                # DETECT TAP
+                # =============================================
 
-                if line.startswith("TAP,"):
+                if "TAP" in line.upper():
 
-                    try:
-
-                        timestamp = int(
-                            line.split(",")[1]
-                        )
-
-                    except ValueError:
-
-                        continue
+                    current_time = int(
+                        time.time() * 1000
+                    )
 
 
-                    # =================
-                    # DEBOUNCE FILTER
-                    # =================
-
+                    # Prevent duplicate sensor triggers
+                    # occurring extremely close together
                     if (
-                        not tap_times
-                        or timestamp
-                        - tap_times[-1]
-                        >= DEBOUNCE_TIME
+
+                        last_tap_time is None
+
+                        or current_time
+                        - last_tap_time > 80
+
                     ):
 
-                        tap_times.append(timestamp)
+                        taps.append(
+                            current_time
+                        )
 
-                        last_tap_time = time.time()
+                        last_tap_time = (
+                            current_time
+                        )
 
                         print(
-                            f"TAP: {timestamp} ms"
+                            f"✓ TAP DETECTED: "
+                            f"{current_time} ms"
                         )
 
 
-            # =========================
-            # DETECT END OF PHRASE
-            # =========================
+            # =================================================
+            # CHECK WHETHER RHYTHM PHRASE HAS ENDED
+            # =================================================
 
             if (
-                tap_times
-                and last_tap_time is not None
-                and len(tap_times) >= MIN_TAPS
+
+                last_tap_time is not None
+
+                and len(taps) >= MIN_TAPS
+
             ):
 
-                pause_duration = (
-                    time.time()
-                    - last_tap_time
+                current_time = int(
+                    time.time() * 1000
                 )
 
+                silence = (
 
-                if pause_duration >= PAUSE_THRESHOLD:
+                    current_time
+                    - last_tap_time
 
-                    print("\nRhythm phrase detected!")
+                ) / 1000
 
-                    # Analyze physical rhythm
-                    analysis = analyze_rhythm(
-                        tap_times
+
+                if silence >= PHRASE_TIMEOUT:
+
+                    print(
+                        "\nRhythm phrase detected!"
                     )
 
 
-                    # Generate AI response
+                    analysis = analyze_rhythm(
+                        taps
+                    )
+
+
                     if analysis:
+
+                        print_analysis(
+                            analysis
+                        )
+
 
                         ai_response = (
                             generate_ai_rhythm(
@@ -425,55 +600,56 @@ def main():
                         )
 
 
-                        # Play AI response
                         if ai_response:
 
                             print(
-                                "\n--- GEMINI RESPONSE ---"
+                                "\nStarting AI "
+                                "Chenda response..."
                             )
-
-                            print(ai_response)
 
                             play_rhythm(
                                 ai_response
                             )
 
 
-                    # =================
-                    # RESET FOR NEXT
-                    # =================
+                    # =========================================
+                    # RESET FOR NEXT RHYTHM
+                    # =========================================
+
+                    taps = []
+
+                    last_tap_time = None
+
 
                     print(
                         "\nReady for next rhythm...\n"
                     )
 
-                    tap_times = []
-                    last_tap_time = None
 
-
-            # Prevent unnecessary CPU usage
-            time.sleep(0.01)
+            # Very short delay to avoid unnecessary CPU usage
+            time.sleep(0.005)
 
 
     except KeyboardInterrupt:
 
         print(
-            "\nStopping AI Chenda Melam..."
+            "\n\nStopping AI Chenda Melam..."
         )
 
 
     finally:
 
-        ser.close()
+        if ser.is_open:
+            ser.close()
 
         print(
             "Serial connection closed."
         )
 
 
-# =================================
+# =========================================================
 # START PROGRAM
-# =================================
+# =========================================================
 
 if __name__ == "__main__":
     main()
